@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from '@tanstack/react-query';
-import { clearAuthState, verifyMember, getAuthCredentials, handleSignInError } from './utils/authUtils';
-import { updateMemberWithAuthId, addMemberRole } from './utils/memberUtils';
+import { clearAuthState, verifyMember, getAuthCredentials } from './utils/authUtils';
 
 export const useLoginForm = () => {
   const [memberNumber, setMemberNumber] = useState('');
@@ -19,75 +18,82 @@ export const useLoginForm = () => {
     
     try {
       setLoading(true);
-      const isMobile = window.innerWidth <= 768;
-      console.log('Starting login process on device type:', isMobile ? 'mobile' : 'desktop');
+      console.log('Starting login process...');
 
-      // Skip clearing auth state on login attempt
+      // Clear any existing sessions first
+      await clearAuthState();
+      console.log('Auth state cleared');
+
+      // Verify member with retries
       const member = await verifyMember(memberNumber);
+      console.log('Member verified:', member);
+
       const { email, password } = getAuthCredentials(memberNumber);
-      
-      console.log('Attempting sign in with:', { email });
-      
-      // Try to sign in
+      console.log('Attempting sign in for:', email);
+
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
-      // If sign in fails due to invalid credentials, try to sign up
-      if (signInError && signInError.message.includes('Invalid login credentials')) {
-        console.log('Sign in failed, attempting signup');
+      if (signInError) {
+        console.error('Sign in error:', signInError);
         
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              member_number: memberNumber,
-            }
-          }
-        });
-
-        if (signUpError) {
-          console.error('Signup error:', signUpError);
-          throw signUpError;
-        }
-
-        if (signUpData.user) {
-          await updateMemberWithAuthId(member.id, signUpData.user.id);
-          await addMemberRole(signUpData.user.id);
-
-          console.log('Member updated and role assigned, attempting final sign in');
+        if (signInError.message.includes('Invalid login credentials')) {
+          console.log('Invalid credentials, attempting signup');
           
-          // Final sign in attempt after successful signup
-          const { data: finalSignInData, error: finalSignInError } = await supabase.auth.signInWithPassword({
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email,
             password,
+            options: {
+              data: {
+                member_number: memberNumber,
+              }
+            }
           });
 
-          if (finalSignInError) {
-            console.error('Final sign in error:', finalSignInError);
-            throw finalSignInError;
+          if (signUpError) {
+            console.error('Signup error:', signUpError);
+            throw signUpError;
           }
 
-          if (!finalSignInData?.session) {
-            throw new Error('Failed to establish session after signup');
+          if (!signUpData.user) {
+            throw new Error('Failed to create user account');
           }
+
+          console.log('Signup successful, updating member:', signUpData.user);
+          
+          const { error: updateError } = await supabase
+            .from('members')
+            .update({ auth_user_id: signUpData.user.id })
+            .eq('id', member.id);
+
+          if (updateError) {
+            console.error('Error updating member:', updateError);
+            throw updateError;
+          }
+
+          // Add member role
+          const { error: roleError } = await supabase
+            .from('user_roles')
+            .insert([{ user_id: signUpData.user.id, role: 'member' }]);
+
+          if (roleError) {
+            console.error('Error adding member role:', roleError);
+            throw roleError;
+          }
+
+          console.log('Member updated and role assigned');
+        } else {
+          throw signInError;
         }
-      } else if (signInError) {
-        await handleSignInError(signInError, email, password);
       }
 
-      // Clear any existing queries before proceeding
-      await queryClient.cancelQueries();
-      await queryClient.clear();
-
       // Verify session is established
-      console.log('Verifying session...');
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       
       if (sessionError) {
-        console.error('Session verification error:', sessionError);
+        console.error('Session error:', sessionError);
         throw sessionError;
       }
 
@@ -96,20 +102,20 @@ export const useLoginForm = () => {
         throw new Error('Failed to establish session');
       }
 
-      console.log('Session established successfully');
-      await queryClient.invalidateQueries();
+      console.log('Session established:', session);
+
+      // Clear any cached data
+      await queryClient.cancelQueries();
+      await queryClient.clear();
 
       toast({
         title: "Login successful",
         description: "Welcome back!",
       });
 
-      // Use replace to prevent back button issues
-      if (isMobile) {
-        window.location.href = '/';
-      } else {
-        navigate('/', { replace: true });
-      }
+      setLoading(false);
+      navigate('/', { replace: true });
+      
     } catch (error: any) {
       console.error('Login error:', error);
       
@@ -118,11 +124,9 @@ export const useLoginForm = () => {
       if (error.message.includes('Member not found')) {
         errorMessage = 'Member number not found or inactive';
       } else if (error.message.includes('Invalid login credentials')) {
-        errorMessage = 'Invalid member number. Please try again.';
-      } else if (error.message.includes('Email not confirmed')) {
-        errorMessage = 'Please verify your email before logging in';
-      } else if (error.message.includes('refresh_token_not_found')) {
-        errorMessage = 'Session expired. Please try logging in again.';
+        errorMessage = 'Invalid member number';
+      } else if (error.message.includes('Failed to fetch')) {
+        errorMessage = 'Network error. Please check your connection and try again.';
       }
       
       toast({
@@ -130,7 +134,7 @@ export const useLoginForm = () => {
         description: errorMessage,
         variant: "destructive",
       });
-    } finally {
+      
       setLoading(false);
     }
   };
