@@ -301,4 +301,48 @@ describe('LoginForm Component', () => {
       expect(screen.getByText(/network error/i)).toBeInTheDocument();
     });
   });
+
+  it('handles edge case: session timeout', async () => {
+    const mockGetSession = vi.fn().mockResolvedValue({
+      data: {
+        session: null,
+      },
+      error: { message: 'Session timeout' },
+    });
+
+    (supabase.auth.getSession as any).mockImplementation(mockGetSession);
+
+    render(
+      <BrowserRouter>
+        <LoginForm />
+      </BrowserRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockGetSession).toHaveBeenCalled();
+      expect(screen.getByText(/session timeout/i)).toBeInTheDocument();
+    });
+  });
+
+  it('handles edge case: session expired', async () => {
+    const mockGetSession = vi.fn().mockResolvedValue({
+      data: {
+        session: null,
+      },
+      error: { message: 'Session expired' },
+    });
+
+    (supabase.auth.getSession as any).mockImplementation(mockGetSession);
+
+    render(
+      <BrowserRouter>
+        <LoginForm />
+      </BrowserRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockGetSession).toHaveBeenCalled();
+      expect(screen.getByText(/session expired/i)).toBeInTheDocument();
+    });
+  });
 });
