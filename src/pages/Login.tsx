@@ -1,10 +1,85 @@
+import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from "@/integrations/supabase/client";
 import LoginForm from '@/components/auth/LoginForm';
 import CommitteeUpdate from '@/components/auth/CommitteeUpdate';
 import MembershipExpectations from '@/components/auth/MembershipExpectations';
 import ImportantInformation from '@/components/auth/ImportantInformation';
 import MedicalExaminer from '@/components/auth/MedicalExaminer';
+import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from '@tanstack/react-query';
 
 const Login = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const handleSessionError = async () => {
+    console.log('Session error detected, cleaning up...');
+    
+    try {
+      await queryClient.invalidateQueries();
+      await queryClient.resetQueries();
+      localStorage.clear();
+      await supabase.auth.signOut();
+      
+      toast({
+        title: "Session expired",
+        description: "Please sign in again",
+      });
+      
+      navigate('/login');
+    } catch (error) {
+      console.error('Cleanup error:', error);
+      window.location.href = '/login';
+    }
+  };
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        console.log('Checking authentication status...');
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('Auth check error:', error);
+          await handleSessionError();
+          return;
+        }
+
+        if (!session) {
+          console.log('No active session found');
+          await handleSessionError();
+          return;
+        }
+
+        const { error: userError } = await supabase.auth.getUser();
+        if (userError) {
+          console.error('User verification failed:', userError);
+          await handleSessionError();
+          return;
+        }
+
+        console.log('Active session found for user:', session.user.id);
+      } catch (error: any) {
+        console.error('Authentication check failed:', error);
+        await handleSessionError();
+      }
+    };
+
+    checkAuth();
+    
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        await handleSessionError();
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-dashboard-dark">
       {/* Header Banner */}
